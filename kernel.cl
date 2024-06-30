@@ -59,7 +59,7 @@ void bresenhamLine(__global unsigned char* imageData, int width, int height, int
   
     while (true) {
         int targetIndex = (y0 * width + x0);
-        imageData[targetIndex] = 255; // Cast to Color* and assign
+        imageData[targetIndex] = 255;
     
         if (x0 == x1 && y0 == y1) break;
         int e2 = 2 * err;

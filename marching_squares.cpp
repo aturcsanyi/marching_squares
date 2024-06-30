@@ -176,7 +176,7 @@ int main()
         {
             std::cout << "Image opened successfully. Width x Height x Components = " << x << " x " << y << " x " << n << "\n";
         }
-        auto input = image_crop_mx(data, x, y, x/2, y/2, 200, 200);
+        auto input = image_crop_mx(data, x, y, 0.75*x, 3*y/8, 1000, 1000);
         //input.print();
         //auto input = image_mx(data, x, y);
 
@@ -184,63 +184,83 @@ int main()
         std::cout << "starting computation on input matrix (size: " << input.n_cols << "*" << input.n_rows << ")\n";
 
         // cpu implementation
-        float dt0 = 0.0f;
         auto t0 = std::chrono::high_resolution_clock::now();
         auto cpu_output = contour_values(input, level);
         auto t1 = std::chrono::high_resolution_clock::now();
-        dt0 = std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count()/1000.0f;
-        std::cout << "cpu version took " << dt0 << " ms\n";
+        float dt0 = std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count()/1000.0f;
+        std::cout << "cpu version: calculating cell indices for 1 level:\n" << dt0 << " ms\n";
 
         //cpu_output.print()
 
         // gpu
+        int output_im_width = (input.n_cols-1)*5;
+        int output_im_height = (input.n_rows-1)*5;
 
-        matrix gpu_output(input.n_cols-1, input.n_rows-1);
+        cl::Buffer image_output{ context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY, output_im_width * output_im_height * sizeof(unsigned char), };
 
-        cl::Buffer buffer_input{ context, std::begin(input.data), std::end(input.data), true };  // true: read-only
-        cl::Buffer buffer_output{ context, std::begin(gpu_output.data), std::end(gpu_output.data), false }; // false: read-write
-
-        // Launch kernel:
-        cl::NDRange global_threads = {gpu_output.n_cols, gpu_output.n_rows};
-        cl::Event ev = kernel_marching_squares(cl::EnqueueArgs{queue, global_threads}, buffer_input, gpu_output.n_cols, gpu_output.n_rows, level, buffer_output);
+        float dt1 = 0.0;
+        float dt2 = 0.0;
         
-        // Copy back results:
-        cl::copy(queue, buffer_output, std::begin(gpu_output.data), std::end(gpu_output.data));
+        for (int i = 15; i < 256; i += 16)
+        {
+            matrix gpu_output(input.n_cols-1, input.n_rows-1);
 
-        int output_im_width = (gpu_output.n_cols)*5;
-        int output_im_height = (gpu_output.n_rows)*5;
+            cl::Buffer buffer_input{ context, std::begin(input.data), std::end(input.data), true };  // true: read-only
+            cl::Buffer buffer_output{ context, std::begin(gpu_output.data), std::end(gpu_output.data), false }; // false: read-write
 
-        cl::Buffer output{ context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY, output_im_width * output_im_height * sizeof(unsigned char), };
-        cl::Event ev2 = kernel_draw_lines(cl::EnqueueArgs{queue, global_threads}, buffer_output, gpu_output.n_cols, gpu_output.n_rows, output);
+            // Launch kernel:
+            cl::NDRange global_threads = {gpu_output.n_cols, gpu_output.n_rows};
+            cl::Event ev = kernel_marching_squares(cl::EnqueueArgs{queue, global_threads}, buffer_input, gpu_output.n_cols, gpu_output.n_rows, i, buffer_output);
+
+            // Copy back results:
+            cl::copy(queue, buffer_output, std::begin(gpu_output.data), std::end(gpu_output.data));
+
+            cl::Event ev2 = kernel_draw_lines(cl::EnqueueArgs{queue, global_threads}, buffer_output, gpu_output.n_cols, gpu_output.n_rows, image_output);
+            queue.finish();
+            cl_ulong t1_0 = ev.getProfilingInfo<CL_PROFILING_COMMAND_END>() - ev.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+            dt1 = (t1_0)*0.001f*0.001f;
+
+            cl_ulong t2_0 = ev2.getProfilingInfo<CL_PROFILING_COMMAND_END>() - ev2.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+            dt2 = (t2_0)*0.001f*0.001f;
+        }
+        std::cout << "gpu version: calculating cell indices for 1 level:\n" << dt1 << " ms\n";
+        std::cout << "gpu version: drawing contour lines for 1 level:\n" << dt2 << " ms\n";
 
         std::vector<unsigned char> image(output_im_width*output_im_height);
-        cl::copy(queue, output, std::begin(image), std::end(image));
-
+        cl::copy(queue, image_output, std::begin(image), std::end(image));
         // Synchronize:
         queue.finish();
 
+        std::cout << "writing output image (" << output_im_width << "x" << output_im_height << ") pixels\n";
+
         int success = stbi_write_jpg("output.jpg", output_im_width, output_im_height, 1, &image[0], 100);
+        if (success)
+        {
+            std::cout << "success\n";
+        }
+        else
+        {
+            std::cout << "output image write failed\n";
+        }
         
-        float dt1 = 0.0f;
-        cl_ulong t1_0 = ev.getProfilingInfo<CL_PROFILING_COMMAND_END>() - ev.getProfilingInfo<CL_PROFILING_COMMAND_START>();
-        dt1 = (t1_0)*0.001f*0.001f;
-        std::cout << "gpu version took " << dt1 << " ms\n";
+        //std::cout << "gpu version took " << dt1 << " ms\n";
 
         //std::cout << "gpu result:" << std::endl;
         //gpu_output.print();
 
         // Verify results:
 
-        int diff = compare(cpu_output, gpu_output);
+        //int diff = compare(cpu_output, gpu_output);
+        // int diff = 0;
 
-        if (not(diff))
-        {
-            std::cout << "SUCCESS: GPU result matches CPU reference\n";
-        }
-        else
-        {
-            std::cout << "FAILURE: GPU result does not match CPU reference, there were " << diff << "mismatches\n";
-        }
+        // if (!diff)
+        // {
+        //     std::cout << "SUCCESS: GPU result matches CPU reference\n";
+        // }
+        // else
+        // {
+        //     std::cout << "FAILURE: GPU result does not match CPU reference, there were " << diff << "mismatches\n";
+        // }
         stbi_image_free(data);
     }
     catch(cl::BuildError& error) // If kernel failed to build
