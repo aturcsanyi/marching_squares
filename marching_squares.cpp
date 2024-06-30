@@ -11,6 +11,8 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 struct matrix
 {
@@ -157,6 +159,7 @@ int main()
         program.build({selected_device});
         
         auto kernel_marching_squares = cl::KernelFunctor<cl::Buffer, cl_int, cl_int, cl_int, cl::Buffer>(program, "marching_squares");
+        auto kernel_draw_lines = cl::KernelFunctor<cl::Buffer, cl_int, cl_int, cl::Buffer>(program, "draw_lines");
 
         // Allocate and setup data buffers:
 
@@ -173,9 +176,9 @@ int main()
         {
             std::cout << "Image opened successfully. Width x Height x Components = " << x << " x " << y << " x " << n << "\n";
         }
-        //auto input = image_crop_mx(data, x, y, x/2, y/2, 20, 20);
+        auto input = image_crop_mx(data, x, y, x/2, y/2, 200, 200);
         //input.print();
-        auto input = image_mx(data, x, y);
+        //auto input = image_mx(data, x, y);
 
         int level = 40;
         std::cout << "starting computation on input matrix (size: " << input.n_cols << "*" << input.n_rows << ")\n";
@@ -204,8 +207,19 @@ int main()
         // Copy back results:
         cl::copy(queue, buffer_output, std::begin(gpu_output.data), std::end(gpu_output.data));
 
+        int output_im_width = (gpu_output.n_cols)*5;
+        int output_im_height = (gpu_output.n_rows)*5;
+
+        cl::Buffer output{ context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY, output_im_width * output_im_height * sizeof(unsigned char), };
+        cl::Event ev2 = kernel_draw_lines(cl::EnqueueArgs{queue, global_threads}, buffer_output, gpu_output.n_cols, gpu_output.n_rows, output);
+
+        std::vector<unsigned char> image(output_im_width*output_im_height);
+        cl::copy(queue, output, std::begin(image), std::end(image));
+
         // Synchronize:
         queue.finish();
+
+        int success = stbi_write_jpg("output.jpg", output_im_width, output_im_height, 1, &image[0], 100);
         
         float dt1 = 0.0f;
         cl_ulong t1_0 = ev.getProfilingInfo<CL_PROFILING_COMMAND_END>() - ev.getProfilingInfo<CL_PROFILING_COMMAND_START>();
